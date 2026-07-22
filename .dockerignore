@@ -1,0 +1,11 @@
+.git
+.idea
+__pycache__
+*.pyc
+*.pyo
+checkpoints/
+results/
+datasets/rrshid_all/
+datasets/hazy2clear/
+*.md
+agent-tools/
