@@ -9,3 +9,5 @@ datasets/rrshid_all/
 datasets/hazy2clear/
 *.md
 agent-tools/
+# Keep ./wheels/*.whl in build context (needed by Dockerfile)
+# Do not ignore wheels/
