@@ -36,6 +36,8 @@ class UCLModel(BaseModel):
         parser.add_argument('--flip_equivariance',
                             type=util.str2bool, nargs='?', const=True, default=False,
                             help="Enforce flip-equivariance as additional regularization. It's used by FastCUT, but not UCL-Dehaze")
+        parser.add_argument('--bottleneck', type=str, default='mamba', choices=['sc', 'mamba'],
+                            help="generator bottleneck: 'sc' = Self-Calibrated Conv (original), 'mamba' = CNN+BiSSM2D")
 
         parser.set_defaults(pool_size=0)  # no image pooling
 

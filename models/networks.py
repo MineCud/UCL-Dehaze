@@ -7,6 +7,19 @@ from torch.optim import lr_scheduler
 import numpy as np
 from .spectralNormalization import SpectralNorm
 from .stylegan_networks import StyleGAN2Discriminator, StyleGAN2Generator, TileStyleGAN2Discriminator
+from .mamba_block import MambaBottleneck
+
+
+def get_bottleneck_layer(opt=None):
+    """Return SCBottleneck or MambaBottleneck based on opt.bottleneck."""
+    kind = "sc"
+    if opt is not None and getattr(opt, "bottleneck", None):
+        kind = str(opt.bottleneck).lower()
+    if kind == "mamba":
+        return MambaBottleneck
+    if kind == "sc":
+        return SCBottleneck
+    raise ValueError("opt.bottleneck must be 'sc' or 'mamba', got %r" % kind)
 
 ###############################################################################
 # Helper Functions
@@ -988,8 +1001,10 @@ class SCBottleneck(nn.Module):
 
 
 class ResidualBlock(nn.Module):
-    def __init__(self, in_features):
+    def __init__(self, in_features, bottleneck_cls=None):
         super(ResidualBlock, self).__init__()
+        if bottleneck_cls is None:
+            bottleneck_cls = SCBottleneck
 
         conv_block = [  nn.ReflectionPad2d(1),
                         nn.Conv2d(in_features, in_features, 3),
@@ -997,7 +1012,7 @@ class ResidualBlock(nn.Module):
                         nn.ReLU(True),
                         nn.ReflectionPad2d(1),
                         SpectralNorm(nn.Conv2d(in_features, in_features, 3)),
-                        SCBottleneck(in_features, in_features)
+                        bottleneck_cls(in_features, in_features)
                         ]
         self.conv_block = nn.Sequential(*conv_block)
 
@@ -1011,13 +1026,14 @@ class ResnetGenerator(nn.Module):
 
         super(ResnetGenerator, self).__init__()
         self.opt = opt
+        Bottleneck = get_bottleneck_layer(opt)
 
         self.conv_1 = nn.Sequential(
             nn.ReflectionPad2d(3),
             nn.Conv2d(input_nc, ngf, kernel_size=7, padding=0),
             nn.InstanceNorm2d(ngf),
             nn.ReLU(True),
-            SCBottleneck(ngf, ngf)
+            Bottleneck(ngf, ngf)
         )
 
         # Downsampleing layer 2 & 3
@@ -1026,7 +1042,7 @@ class ResnetGenerator(nn.Module):
             nn.Conv2d(ngf, 128, 3, stride=2, padding=1),
             nn.InstanceNorm2d(128),
             nn.ReLU(True),
-            SCBottleneck(128, 128)
+            Bottleneck(128, 128)
         )
 
         # inputsize:128*128*128, outputsize:256*64*64
@@ -1034,13 +1050,13 @@ class ResnetGenerator(nn.Module):
             nn.Conv2d(128, 256, 3, stride=2, padding=1),
             nn.InstanceNorm2d(256),
             nn.ReLU(True),
-            SCBottleneck(256, 256)
+            Bottleneck(256, 256)
         )
 
         # Residual blocks      add 9 ResNet blocks
         res = []
         for _ in range(n_blocks):
-            res += [ResidualBlock(256)]
+            res += [ResidualBlock(256, bottleneck_cls=Bottleneck)]
         self.res = nn.Sequential(*res)
 
 
@@ -1050,7 +1066,7 @@ class ResnetGenerator(nn.Module):
             nn.ConvTranspose2d(512, 128, 3, stride=2, padding=1, output_padding=1),
             nn.InstanceNorm2d(128),
             nn.ReLU(True),
-            SCBottleneck(128, 128)
+            Bottleneck(128, 128)
         )
 
         # inputsize:128*128*128, outputsize:64*256*256
@@ -1058,7 +1074,7 @@ class ResnetGenerator(nn.Module):
             nn.ConvTranspose2d(256, 64, 3, stride=2, padding=1, output_padding=1),
             nn.InstanceNorm2d(64),
             nn.ReLU(True),
-            SCBottleneck(64, 64)
+            Bottleneck(64, 64)
         )
 
         # Output layer
