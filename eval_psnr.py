@@ -33,10 +33,13 @@ def list_images(folder: Path) -> list[Path]:
     return sorted(p for p in folder.iterdir() if p.suffix.lower() in IMG_EXTS and p.is_file())
 
 
-def to_tensor(path: Path) -> torch.Tensor:
+def to_tensor(path: Path, size: int | None = None) -> torch.Tensor:
     img = Image.open(path).convert("RGB")
-    t = T.Compose([T.ToTensor(), T.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
-    return t(img).unsqueeze(0)
+    transforms = []
+    if size is not None:
+        transforms.append(T.Resize((size, size), interpolation=T.InterpolationMode.BICUBIC))
+    transforms.extend([T.ToTensor(), T.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+    return T.Compose(transforms)(img).unsqueeze(0)
 
 
 def psnr(pred: np.ndarray, gt: np.ndarray, data_range: float = 255.0) -> float:
@@ -79,7 +82,8 @@ def build_opt(args: argparse.Namespace):
         f"--phase test --eval --preprocess none "
         f"--load_size {args.load_size} --crop_size {args.crop_size} "
         f"--gpu_ids {args.gpu_ids} --epoch {args.epoch} "
-        f"--checkpoints_dir {args.checkpoints_dir} --results_dir {args.results_dir}"
+        f"--checkpoints_dir {args.checkpoints_dir} --results_dir {args.results_dir} "
+        f"--bottleneck {args.bottleneck}"
     )
     opt = TestOptions(cmd_line=cmd).parse()
     opt.isTrain = False
@@ -98,8 +102,9 @@ def main() -> None:
     parser.add_argument("--gt", type=Path, required=True, help="folder of clean GT (same filenames)")
     parser.add_argument("--epoch", type=str, default="latest")
     parser.add_argument("--gpu_ids", type=str, default="0")
-    parser.add_argument("--load_size", type=int, default=512)
-    parser.add_argument("--crop_size", type=int, default=512)
+    parser.add_argument("--load_size", type=int, default=256)
+    parser.add_argument("--crop_size", type=int, default=256)
+    parser.add_argument("--bottleneck", type=str, default="mamba", choices=["sc", "mamba"])
     parser.add_argument("--checkpoints_dir", type=str, default="./checkpoints")
     parser.add_argument("--results_dir", type=str, default="./results")
     parser.add_argument("--out_dir", type=Path, default=None, help="save dehazed images here")
@@ -112,6 +117,7 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     opt = build_opt(args)
+    size = args.crop_size
     # Dummy batch to init G (test path only needs netG)
     hazy_list = list_images(args.hazy)
     if not hazy_list:
@@ -119,8 +125,8 @@ def main() -> None:
 
     model = create_model(opt)
     dummy = {
-        "A": to_tensor(hazy_list[0]),
-        "B": to_tensor(hazy_list[0]),
+        "A": to_tensor(hazy_list[0], size),
+        "B": to_tensor(hazy_list[0], size),
         "A_paths": [str(hazy_list[0])],
         "B_paths": [str(hazy_list[0])],
     }
@@ -141,8 +147,8 @@ def main() -> None:
                 continue
 
             data = {
-                "A": to_tensor(hazy_path),
-                "B": to_tensor(gt_path),
+                "A": to_tensor(hazy_path, size),
+                "B": to_tensor(gt_path, size),
                 "A_paths": [str(hazy_path)],
                 "B_paths": [str(gt_path)],
             }
