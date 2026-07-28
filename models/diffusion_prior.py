@@ -251,6 +251,11 @@ def build_diffusion_prior(opt, device) -> Optional[DiffusionPriorTeacher]:
     if not opt.isTrain and not getattr(opt, "diff_prior_infer", False):
         return None
 
+    # China-friendly Hub mirror (override with HF_ENDPOINT if already set)
+    import os
+    if not os.environ.get("HF_ENDPOINT"):
+        os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+
     name = getattr(opt, "diff_teacher_name_or_path", "runwayml/stable-diffusion-v1-5")
     mode = getattr(opt, "diff_prior_mode", "feature")
     dtype_name = getattr(opt, "diff_prior_dtype", "fp16")
