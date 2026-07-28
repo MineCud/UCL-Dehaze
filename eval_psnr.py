@@ -83,7 +83,7 @@ def build_opt(args: argparse.Namespace):
         f"--load_size {args.load_size} --crop_size {args.crop_size} "
         f"--gpu_ids {args.gpu_ids} --epoch {args.epoch} "
         f"--checkpoints_dir {args.checkpoints_dir} --results_dir {args.results_dir} "
-        f"--bottleneck {args.bottleneck}"
+        f"--bottleneck {args.bottleneck} --use_diff_prior false --use_phys_loss false"
     )
     opt = TestOptions(cmd_line=cmd).parse()
     opt.isTrain = False

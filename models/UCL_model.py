@@ -39,6 +39,30 @@ class UCLModel(BaseModel):
         parser.add_argument('--bottleneck', type=str, default='mamba', choices=['sc', 'mamba'],
                             help="generator bottleneck: 'sc' = Self-Calibrated Conv (original), 'mamba' = CNN+BiSSM2D")
 
+        # ---- Diffusion prior (training-only teacher, ablatable; default OFF) ----
+        parser.add_argument('--use_diff_prior', type=util.str2bool, nargs='?', const=True, default=False,
+                            help='use frozen diffusion teacher as clear-manifold prior (train only by default)')
+        parser.add_argument('--diff_prior_mode', type=str, default='feature',
+                            choices=['feature', 'latent', 'score'],
+                            help='diffusion prior alignment mode')
+        parser.add_argument('--diff_prior_weight', type=float, default=0.1,
+                            help='weight for diffusion prior loss')
+        parser.add_argument('--diff_teacher_name_or_path', type=str,
+                            default='runwayml/stable-diffusion-v1-5',
+                            help='HuggingFace id or local path of diffusion teacher (prefer RS-finetuned)')
+        parser.add_argument('--diff_prior_dtype', type=str, default='fp16', choices=['fp16', 'fp32'],
+                            help='dtype for frozen diffusion teacher')
+        parser.add_argument('--diff_score_timestep', type=int, default=200,
+                            help='timestep used in feature/score prior extraction')
+        parser.add_argument('--diff_prior_infer', type=util.str2bool, nargs='?', const=True, default=False,
+                            help='if true, also load teacher at test time (usually unnecessary)')
+
+        # ---- Optional lightweight physics consistency (ablatable; default OFF) ----
+        parser.add_argument('--use_phys_loss', type=util.str2bool, nargs='?', const=True, default=False,
+                            help='add lightweight atmospheric scattering consistency loss')
+        parser.add_argument('--phys_loss_weight', type=float, default=0.05,
+                            help='weight for physics consistency loss')
+
         parser.set_defaults(pool_size=0)  # no image pooling
 
         opt, _ = parser.parse_known_args()
@@ -60,6 +84,11 @@ class UCLModel(BaseModel):
             self.loss_names += ['NCE_Y']
             self.visual_names += ['idt_B']
 
+        if getattr(opt, 'use_diff_prior', False) and self.isTrain:
+            self.loss_names += ['diff_prior']
+        if getattr(opt, 'use_phys_loss', False) and self.isTrain:
+            self.loss_names += ['phys']
+
         if self.isTrain:
             self.model_names = ['G', 'F', 'D']
         else:  # during test time, only load G
@@ -68,6 +97,12 @@ class UCLModel(BaseModel):
         # define networks (both generator and discriminator)
         self.netG = networks.define_G(opt.input_nc, opt.output_nc, opt.ngf, opt.netG, opt.normG, not opt.no_dropout, opt.init_type, opt.init_gain, opt.no_antialias, opt.no_antialias_up, self.gpu_ids, opt)
         self.netF = networks.define_F(opt.input_nc, opt.netF, opt.normG, not opt.no_dropout, opt.init_type, opt.init_gain, opt.no_antialias, self.gpu_ids, opt)
+
+        # Frozen diffusion teacher (optional, training-only by default)
+        self.diff_prior = None
+        if getattr(opt, 'use_diff_prior', False):
+            from .diffusion_prior import build_diffusion_prior
+            self.diff_prior = build_diffusion_prior(opt, self.device)
 
         if self.isTrain:
             self.netD = networks.define_D(opt.output_nc, opt.ndf, opt.netD, opt.n_layers_D, opt.normD, opt.init_type, opt.init_gain, opt.no_antialias, self.gpu_ids, opt)
@@ -188,9 +223,25 @@ class UCLModel(BaseModel):
         else:
             loss_NCE_both = self.loss_NCE
 
-        self.loss_perceptual = self.perceptual_loss(self.real_A, self.fake_B, self.real_B) * 0.0002     
+        self.loss_perceptual = self.perceptual_loss(self.real_A, self.fake_B, self.real_B) * 0.0002
 
-        self.loss_G = self.loss_G_GAN + loss_NCE_both + self.loss_idt + self.loss_perceptual
+        # Optional diffusion clear-manifold prior (teacher frozen)
+        self.loss_diff_prior = 0.0
+        if self.diff_prior is not None and getattr(self.opt, 'use_diff_prior', False):
+            w = float(getattr(self.opt, 'diff_prior_weight', 0.1))
+            self.loss_diff_prior = self.diff_prior.compute_prior_loss(
+                self.fake_B, self.real_B, hazy=self.real_A
+            ) * w
+
+        # Optional lightweight physics consistency
+        self.loss_phys = 0.0
+        if getattr(self.opt, 'use_phys_loss', False):
+            from .diffusion_prior import physics_consistency_loss
+            w_p = float(getattr(self.opt, 'phys_loss_weight', 0.05))
+            self.loss_phys = physics_consistency_loss(self.real_A, self.fake_B) * w_p
+
+        self.loss_G = self.loss_G_GAN + loss_NCE_both + self.loss_idt + self.loss_perceptual \
+            + self.loss_diff_prior + self.loss_phys
         return self.loss_G
 
     def perceptual_loss(self, x, y, z):
@@ -226,6 +277,3 @@ class UCLModel(BaseModel):
             total_nce_loss += loss.mean()
 
         return total_nce_loss / n_layers
-
-
-
