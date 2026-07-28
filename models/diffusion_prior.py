@@ -23,13 +23,24 @@ import torch.nn.functional as F
 
 def _require_diffusers():
     try:
+        import torch
+        # Older PyTorch (no torch.xpu) breaks newer diffusers imports.
+        if not hasattr(torch, "xpu"):
+            import types
+
+            torch.xpu = types.SimpleNamespace(
+                is_available=lambda: False,
+                empty_cache=lambda: None,
+                device_count=lambda: 0,
+            )
+
         import diffusers  # noqa: F401
         from diffusers import AutoencoderKL, UNet2DConditionModel, DDPMScheduler
         from transformers import CLIPTextModel, CLIPTokenizer
     except ImportError as e:
         raise ImportError(
             "Diffusion prior requires optional deps. Install with:\n"
-            "  pip install diffusers transformers accelerate safetensors\n"
+            "  pip install 'diffusers==0.27.2' 'transformers==4.38.2' accelerate safetensors\n"
             f"Original error: {e}"
         ) from e
     return AutoencoderKL, UNet2DConditionModel, DDPMScheduler, CLIPTextModel, CLIPTokenizer
@@ -156,8 +167,7 @@ class DiffusionPriorTeacher(nn.Module):
             return_dict=False,
         )[0]
 
-    def extract_features(self, x: torch.Tensor) -> List[torch.Tensor]:
-        """Run VAE->latent and UNet once; return hooked features (grads w.r.t. x kept)."""
+yy        """Run VAE->latent and UNet once; return hooked features (grads w.r.t. x kept)."""
         self._feat_cache = {}
         latents = self.encode_latent(x, sample=False)
         b = latents.shape[0]
