@@ -8,9 +8,10 @@ scipy
 Pillow>=6.1.0
 numpy>=1.16.4
 # Optional: only needed when training with --use_diff_prior true
-# Pin versions for older PyTorch (no torch.xpu):
-#   pip install 'diffusers==0.27.2' 'transformers==4.38.2' accelerate safetensors
+# Pin versions for older PyTorch containers:
+#   pip install 'diffusers==0.27.2' 'transformers==4.38.2' 'huggingface_hub==0.21.4' accelerate safetensors
 # diffusers==0.27.2
 # transformers==4.38.2
+# huggingface_hub==0.21.4
 # accelerate>=0.25.0
 # safetensors>=0.4.0

@@ -40,7 +40,8 @@ def _require_diffusers():
     except ImportError as e:
         raise ImportError(
             "Diffusion prior requires optional deps. Install with:\n"
-            "  pip install 'diffusers==0.27.2' 'transformers==4.38.2' accelerate safetensors\n"
+            "  pip install 'diffusers==0.27.2' 'transformers==4.38.2' "
+            "'huggingface_hub==0.21.4' accelerate safetensors\n"
             f"Original error: {e}"
         ) from e
     return AutoencoderKL, UNet2DConditionModel, DDPMScheduler, CLIPTextModel, CLIPTokenizer
