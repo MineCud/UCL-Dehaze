@@ -167,7 +167,8 @@ class DiffusionPriorTeacher(nn.Module):
             return_dict=False,
         )[0]
 
-yy        """Run VAE->latent and UNet once; return hooked features (grads w.r.t. x kept)."""
+    def extract_features(self, x: torch.Tensor) -> List[torch.Tensor]:
+        """Run VAE->latent and UNet once; return hooked features (grads w.r.t. x kept)."""
         self._feat_cache = {}
         latents = self.encode_latent(x, sample=False)
         b = latents.shape[0]
