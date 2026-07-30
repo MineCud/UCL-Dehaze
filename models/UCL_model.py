@@ -59,9 +59,23 @@ class UCLModel(BaseModel):
 
         # ---- Optional lightweight physics consistency (ablatable; default OFF) ----
         parser.add_argument('--use_phys_loss', type=util.str2bool, nargs='?', const=True, default=False,
-                            help='add lightweight atmospheric scattering consistency loss')
+                            help='heuristic DCP physics loss (no TransmissionNet)')
         parser.add_argument('--phys_loss_weight', type=float, default=0.05,
-                            help='weight for physics consistency loss')
+                            help='weight for heuristic physics consistency loss')
+
+        # ---- Physical reconstruction closed-loop (learned t; ablatable; default OFF) ----
+        parser.add_argument('--use_phys_recon', type=util.str2bool, nargs='?', const=True, default=False,
+                            help='learned transmission + I≈J*t+A*(1-t) closed-loop (train only)')
+        parser.add_argument('--phys_recon_weight', type=float, default=0.1,
+                            help='weight for total physical closed-loop loss')
+        parser.add_argument('--phys_inv_weight', type=float, default=0.5,
+                            help='relative weight of inverse J_phy≈J inside phys recon')
+        parser.add_argument('--phys_chroma_weight', type=float, default=0.5,
+                            help='relative weight of chromaticity fidelity inside phys recon')
+        parser.add_argument('--phys_t_prior_weight', type=float, default=0.1,
+                            help='relative weight of soft DCP prior on predicted t')
+        parser.add_argument('--phys_t_min', type=float, default=0.1, help='min transmission')
+        parser.add_argument('--phys_t_nf', type=int, default=32, help='TransmissionNet base channels')
 
         parser.set_defaults(pool_size=0)  # no image pooling
 
@@ -88,9 +102,13 @@ class UCLModel(BaseModel):
             self.loss_names += ['diff_prior']
         if getattr(opt, 'use_phys_loss', False) and self.isTrain:
             self.loss_names += ['phys']
+        if getattr(opt, 'use_phys_recon', False) and self.isTrain:
+            self.loss_names += ['phys_recon', 'phys_inv', 'phys_chroma', 'phys_t_prior']
 
         if self.isTrain:
             self.model_names = ['G', 'F', 'D']
+            if getattr(opt, 'use_phys_recon', False):
+                self.model_names += ['T']
         else:  # during test time, only load G
             self.model_names = ['G']
 
@@ -104,6 +122,12 @@ class UCLModel(BaseModel):
             from .diffusion_prior import build_diffusion_prior
             self.diff_prior = build_diffusion_prior(opt, self.device)
 
+        # Learned transmission for physical closed-loop (training-only)
+        self.netT = None
+        if getattr(opt, 'use_phys_recon', False) and self.isTrain:
+            from .physics_recon import define_T
+            self.netT = define_T(opt, self.gpu_ids)
+
         if self.isTrain:
             self.netD = networks.define_D(opt.output_nc, opt.ndf, opt.netD, opt.n_layers_D, opt.normD, opt.init_type, opt.init_gain, opt.no_antialias, self.gpu_ids, opt)
 
@@ -115,7 +139,10 @@ class UCLModel(BaseModel):
                 self.criterionNCE.append(PatchNCELoss(opt).to(self.device))
 
             self.criterionIdt = torch.nn.L1Loss().to(self.device)
-            self.optimizer_G = torch.optim.Adam(self.netG.parameters(), lr=opt.lr, betas=(opt.beta1, opt.beta2))
+            g_params = list(self.netG.parameters())
+            if self.netT is not None:
+                g_params += list(self.netT.parameters())
+            self.optimizer_G = torch.optim.Adam(g_params, lr=opt.lr, betas=(opt.beta1, opt.beta2))
             self.optimizer_D = torch.optim.Adam(self.netD.parameters(), lr=opt.lr, betas=(opt.beta1, opt.beta2))
             self.optimizers.append(self.optimizer_G)
             self.optimizers.append(self.optimizer_D)
@@ -233,15 +260,42 @@ class UCLModel(BaseModel):
                 self.fake_B, self.real_B, hazy=self.real_A
             ) * w
 
-        # Optional lightweight physics consistency
+        # Optional lightweight heuristic physics consistency
         self.loss_phys = 0.0
         if getattr(self.opt, 'use_phys_loss', False):
             from .diffusion_prior import physics_consistency_loss
             w_p = float(getattr(self.opt, 'phys_loss_weight', 0.05))
             self.loss_phys = physics_consistency_loss(self.real_A, self.fake_B) * w_p
 
+        # Physical reconstruction closed-loop: I ≈ J*t + A*(1-t)
+        self.loss_phys_recon = 0.0
+        self.loss_phys_inv = 0.0
+        self.loss_phys_chroma = 0.0
+        self.loss_phys_t_prior = 0.0
+        loss_phys_loop = 0.0
+        if self.netT is not None and getattr(self.opt, 'use_phys_recon', False):
+            from .physics_recon import physical_closed_loop_loss
+            t_map = self.netT(self.real_A)
+            loop, parts = physical_closed_loop_loss(
+                self.real_A,
+                self.fake_B,
+                t_map,
+                t_min=float(getattr(self.opt, 'phys_t_min', 0.1)),
+                recon_w=1.0,
+                inv_w=float(getattr(self.opt, 'phys_inv_weight', 0.5)),
+                chroma_w=float(getattr(self.opt, 'phys_chroma_weight', 0.5)),
+                t_prior_w=float(getattr(self.opt, 'phys_t_prior_weight', 0.1)),
+            )
+            w_loop = float(getattr(self.opt, 'phys_recon_weight', 0.1))
+            loss_phys_loop = loop * w_loop
+            self.loss_phys_recon = parts['phys_recon'] * w_loop
+            self.loss_phys_inv = parts['phys_inv'] * w_loop * float(getattr(self.opt, 'phys_inv_weight', 0.5))
+            self.loss_phys_chroma = parts['phys_chroma'] * w_loop * float(getattr(self.opt, 'phys_chroma_weight', 0.5))
+            self.loss_phys_t_prior = parts['phys_t_prior'] * w_loop * float(getattr(self.opt, 'phys_t_prior_weight', 0.1))
+            self.t_map = parts['t_map']
+
         self.loss_G = self.loss_G_GAN + loss_NCE_both + self.loss_idt + self.loss_perceptual \
-            + self.loss_diff_prior + self.loss_phys
+            + self.loss_diff_prior + self.loss_phys + loss_phys_loop
         return self.loss_G
 
     def perceptual_loss(self, x, y, z):
