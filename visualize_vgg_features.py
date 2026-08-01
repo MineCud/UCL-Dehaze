@@ -39,9 +39,9 @@ from torchvision import models
 # Same selection as models/base_model.py::VGGNet
 VGG_SELECT = ["9", "16", "30"]
 VGG_NAMES = {
-    "9": "feat1 (idx=9, ~conv3)",
-    "16": "feat2 (idx=16, ~conv4)",
-    "30": "feat3 (idx=30, ~conv5)",
+    "9": "feat1 (idx=9, pool2 / 128ch)",
+    "16": "feat2 (idx=16, pool3 / 256ch)",
+    "30": "feat3 (idx=30, pool5 / 512ch)",
 }
 
 
