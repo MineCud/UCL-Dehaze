@@ -104,11 +104,11 @@ def feat_to_heatmaps(feat: torch.Tensor, n_show: int = 16) -> list[Image.Image]:
 
 
 def _normalize_map(m: torch.Tensor) -> Image.Image:
+    m = m.detach().float().cpu()
     m = m - m.min()
     if float(m.max()) > 1e-8:
         m = m / m.max()
     arr = (m.numpy() * 255).astype(np.uint8)
-    # simple colormap via PIL (grayscale); optional colorize
     gray = Image.fromarray(arr, mode="L")
     return gray.convert("RGB")
 
@@ -140,9 +140,10 @@ def make_grid(images: list[Image.Image], labels: list[str], cell: int = 128) -> 
 def save_layer_vis(feat: torch.Tensor, out_dir: Path, tag: str, n_show: int, size: int):
     out_dir.mkdir(parents=True, exist_ok=True)
     # upsample mean map to input size for overlay feel
+    feat = feat.detach()
     mean = feat.mean(dim=1, keepdim=True)
     mean_up = F.interpolate(mean, size=(size, size), mode="bilinear", align_corners=False)
-    heat = colorize(_normalize_map(mean_up[0, 0]))
+    heat = colorize(_normalize_map(mean_up[0, 0].cpu()))
     heat.save(out_dir / f"{tag}_mean_heatmap.png")
 
     maps = feat_to_heatmaps(feat, n_show=n_show)
