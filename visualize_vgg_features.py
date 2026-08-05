@@ -198,6 +198,7 @@ def process_one_image(
     n_show: int,
     mean_only: bool,
 ) -> dict:
+    out_dir.mkdir(parents=True, exist_ok=True)
     x = load_tensor(path, load_size, device)
     tensor_to_pil(x).save(out_dir / f"{tag}_rgb.png")
     feats = net(x)
