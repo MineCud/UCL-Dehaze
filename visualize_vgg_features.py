@@ -21,6 +21,12 @@ Usage (Docker / server):
   python visualize_vgg_features.py \\
     --img /path/to/hazy.png --clear /path/to/clean.png --dehazed /path/to/out.png \\
     --out_dir ./results/vgg_vis/triple --gpu_ids 0
+
+  # Batch: all hazy + GT images in RSID folders
+  python visualize_vgg_features.py --batch \\
+    --rsid_root /data/RSID \\
+    --out_dir ./results/vgg_vis/rsid_all \\
+    --mean_only --gpu_ids 0
 """
 
 from __future__ import annotations
@@ -137,7 +143,17 @@ def make_grid(images: list[Image.Image], labels: list[str], cell: int = 128) -> 
     return canvas
 
 
-def save_layer_vis(feat: torch.Tensor, out_dir: Path, tag: str, n_show: int, size: int):
+IMG_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
+
+
+def list_images(folder: Path) -> list[Path]:
+    return sorted(p for p in folder.iterdir() if p.suffix.lower() in IMG_EXTS and p.is_file())
+
+
+
+def save_layer_vis(
+    feat: torch.Tensor, out_dir: Path, tag: str, n_show: int, size: int, mean_only: bool = False
+):
     out_dir.mkdir(parents=True, exist_ok=True)
     # upsample mean map to input size for overlay feel
     feat = feat.detach()
@@ -145,6 +161,8 @@ def save_layer_vis(feat: torch.Tensor, out_dir: Path, tag: str, n_show: int, siz
     mean_up = F.interpolate(mean, size=(size, size), mode="bilinear", align_corners=False)
     heat = colorize(_normalize_map(mean_up[0, 0].cpu()))
     heat.save(out_dir / f"{tag}_mean_heatmap.png")
+    if mean_only:
+        return
 
     maps = feat_to_heatmaps(feat, n_show=n_show)
     imgs, labs = [], []
@@ -153,6 +171,115 @@ def save_layer_vis(feat: torch.Tensor, out_dir: Path, tag: str, n_show: int, siz
         labs.append(name)
     grid = make_grid(imgs, labs, cell=128)
     grid.save(out_dir / f"{tag}_channels.png")
+
+
+def save_compare_mean(all_feats: dict, tags: list[str], out_path: Path, size: int):
+    """Side-by-side mean heatmaps for each VGG layer."""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    for lid in VGG_SELECT:
+        row = []
+        for tag in tags:
+            mean = all_feats[tag][lid].mean(dim=1, keepdim=True)
+            mean_up = F.interpolate(
+                mean, size=(size, size), mode="bilinear", align_corners=False
+            )
+            row.append(colorize(_normalize_map(mean_up[0, 0].cpu())))
+        grid = make_grid(row, [f"{t}-vgg{lid}" for t in tags], cell=size)
+        grid.save(out_path.parent / f"{out_path.stem}_vgg{lid}_mean.png")
+
+
+def process_one_image(
+    net: VGGFeat,
+    path: Path,
+    out_dir: Path,
+    tag: str,
+    device: torch.device,
+    load_size: int,
+    n_show: int,
+    mean_only: bool,
+) -> dict:
+    x = load_tensor(path, load_size, device)
+    tensor_to_pil(x).save(out_dir / f"{tag}_rgb.png")
+    feats = net(x)
+    for lid, feat in feats.items():
+        save_layer_vis(feat, out_dir, f"vgg{lid}", n_show, load_size, mean_only=mean_only)
+    return feats
+
+
+def batch_from_folders(
+    net: VGGFeat,
+    hazy_dir: Path,
+    gt_dir: Path | None,
+    out_root: Path,
+    device: torch.device,
+    load_size: int,
+    n_show: int,
+    mean_only: bool,
+    compare_pairs: bool,
+):
+    hazy_images = list_images(hazy_dir)
+    if not hazy_images:
+        print(f"[skip] no images in {hazy_dir}")
+        return
+    print(f"[batch] {hazy_dir} -> {len(hazy_images)} images")
+    for i, hazy_path in enumerate(hazy_images, 1):
+        stem = hazy_path.stem
+        hazy_out = out_root / "hazy" / stem
+        hazy_feats = process_one_image(
+            net, hazy_path, hazy_out, "input", device, load_size, n_show, mean_only
+        )
+        gt_path = None
+        if gt_dir is not None:
+            for cand in (gt_dir / hazy_path.name, gt_dir / f"{stem}{hazy_path.suffix}"):
+                if cand.is_file():
+                    gt_path = cand
+                    break
+        if gt_path is not None:
+            gt_out = out_root / "GT" / stem
+            gt_feats = process_one_image(
+                net, gt_path, gt_out, "clear", device, load_size, n_show, mean_only
+            )
+            if compare_pairs:
+                save_compare_mean(
+                    {"hazy": hazy_feats, "GT": gt_feats},
+                    ["hazy", "GT"],
+                    out_root / "compare" / stem / "pair",
+                    load_size,
+                )
+        if i % 20 == 0 or i == len(hazy_images):
+            print(f"  {hazy_dir.name}: {i}/{len(hazy_images)}")
+
+
+def batch_rsid_all(
+    rsid_root: Path,
+    out_root: Path,
+    device: torch.device,
+    load_size: int,
+    n_show: int,
+    mean_only: bool,
+    compare_pairs: bool,
+    net: VGGFeat,
+):
+    for split in ("train", "test"):
+        hazy_dir = rsid_root / split / "hazy"
+        gt_dir = rsid_root / split / "GT"
+        if not hazy_dir.is_dir():
+            print(f"[skip] missing {hazy_dir}")
+            continue
+        if not gt_dir.is_dir():
+            gt_dir = None
+            print(f"[warn] no GT for {split}, only hazy heatmaps")
+        batch_from_folders(
+            net,
+            hazy_dir,
+            gt_dir,
+            out_root / split,
+            device,
+            load_size,
+            n_show,
+            mean_only,
+            compare_pairs,
+        )
 
 
 def print_vgg_structure():
@@ -180,21 +307,57 @@ def main():
     ap.add_argument("--n_show", type=int, default=16, help="top channels to show per layer")
     ap.add_argument("--gpu_ids", type=str, default="0")
     ap.add_argument("--list_layers", action="store_true", help="print VGG layer list and exit")
+    ap.add_argument("--batch", action="store_true", help="batch mode for folders")
+    ap.add_argument("--rsid_root", type=str, default=None, help="RSID root with train/test/hazy,GT")
+    ap.add_argument("--hazy_dir", type=str, default=None, help="batch: hazy image folder")
+    ap.add_argument("--gt_dir", type=str, default=None, help="batch: GT image folder")
+    ap.add_argument("--mean_only", action="store_true", help="batch: save mean heatmaps only (faster)")
+    ap.add_argument("--compare_pairs", action="store_true", help="batch: save hazy vs GT compare grids")
     args = ap.parse_args()
 
     if args.list_layers:
         print_vgg_structure()
         return
 
-    if not args.img:
-        ap.error("--img is required unless --list_layers")
-
     gpu = args.gpu_ids.split(",")[0].strip()
     device = torch.device(f"cuda:{gpu}" if gpu != "-1" and torch.cuda.is_available() else "cpu")
     out_root = Path(args.out_dir)
     out_root.mkdir(parents=True, exist_ok=True)
-
     net = VGGFeat().to(device)
+
+    if args.batch:
+        if args.rsid_root:
+            batch_rsid_all(
+                Path(args.rsid_root),
+                out_root,
+                device,
+                args.load_size,
+                args.n_show,
+                args.mean_only,
+                args.compare_pairs,
+                net,
+            )
+        elif args.hazy_dir:
+            gt_dir = Path(args.gt_dir) if args.gt_dir else None
+            batch_from_folders(
+                net,
+                Path(args.hazy_dir),
+                gt_dir,
+                out_root,
+                device,
+                args.load_size,
+                args.n_show,
+                args.mean_only,
+                args.compare_pairs,
+            )
+        else:
+            ap.error("batch mode needs --rsid_root or --hazy_dir")
+        print(f"\nSaved batch visualizations to: {out_root.resolve()}")
+        return
+
+    if not args.img:
+        ap.error("--img is required unless --list_layers or --batch")
+
     print_vgg_structure()
 
     items = [("input", Path(args.img))]
@@ -212,7 +375,9 @@ def main():
         for lid, feat in feats.items():
             c, h, w = feat.shape[1:]
             print(f"[{tag}] {VGG_NAMES[lid]}: shape=({c},{h},{w})")
-            save_layer_vis(feat, out_root / tag, f"vgg{lid}", args.n_show, args.load_size)
+            save_layer_vis(
+                feat, out_root / tag, f"vgg{lid}", args.n_show, args.load_size, mean_only=False
+            )
 
     # Side-by-side mean heatmaps across images for each VGG layer
     if len(items) > 1:
@@ -224,7 +389,7 @@ def main():
                 mean_up = F.interpolate(
                     mean, size=(args.load_size, args.load_size), mode="bilinear", align_corners=False
                 )
-                row.append(colorize(_normalize_map(mean_up[0, 0])))
+                row.append(colorize(_normalize_map(mean_up[0, 0].cpu())))
                 labs.append(f"{tag}\n{VGG_NAMES[lid]}")
             # also paste RGB of first image as reference strip
             grid = make_grid(row, [f"{t}-vgg{lid}" for t, _ in items], cell=args.load_size)
